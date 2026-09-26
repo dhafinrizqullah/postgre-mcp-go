@@ -5,6 +5,30 @@ Target: a drop-in MCP server for Postgres in Go 1.26, published as
 
 Upstream reference: <https://github.com/crystaldba/postgres-mcp> (MIT, ~7.3k LOC Python + 6.4k LOC tests).
 
+## Status
+
+| Phase | State |
+| --- | --- |
+| 0 — skeleton, cgo spike, both transports | done |
+| 1 — 6 tools | done |
+| 1.5 — `analyze_db_health`, 7 checks | done |
+| 2 — polish | not started |
+| 3 — index tuning (DTA) | not started |
+
+Verified end to end against a local PostgreSQL 18: all 7 tools return real data over
+stdio and streamable HTTP, and the security table in `internal/safesql` rejects
+multi-statement, write, function, and `LIKE $1` cases.
+
+Two gaps to close before release:
+
+- **The `hypopg` branch of `explain_query` is untested.** hypopg was not installable
+  in the test environment, so only its "extension missing" path is verified.
+  `brew install postgresql@18-hypopg`, or a CI service container, then exercise it.
+- **Index bloat has never produced a finding.** The query is valid and runs, but the
+  test tables are far below the 5 MB threshold that keeps small indexes out of the
+  report. Verify against a table with a large, deleted-from index.
+
+
 ---
 
 ## 1. Position on the original 1:1 port

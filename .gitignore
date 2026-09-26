@@ -1,6 +1,7 @@
 # Go
 /bin/
 /dist/
+/postgres-mcp-go
 *.test
 *.out
 vendor/

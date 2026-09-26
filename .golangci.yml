@@ -1,0 +1,39 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - misspell
+    - noctx
+    - revive
+    - unconvert
+  settings:
+    revive:
+      rules:
+        # The error strings here are read by a language model, so they start
+        # lowercase and avoid punctuation, which is revive's default advice.
+        - name: error-strings
+          disabled: true
+  exclusions:
+    generated: lax
+    rules:
+      # The generated allowlist is data, not logic, and is long by nature.
+      - path: internal/safesql/allowlist_gen\.go
+        linters:
+          - gocritic
+          - revive
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
