@@ -1,0 +1,15 @@
+# Go
+/bin/
+/dist/
+*.test
+*.out
+vendor/
+
+# local env
+.env
+.env.local
+
+# editors / OS
+.DS_Store
+.idea/
+.vscode/
