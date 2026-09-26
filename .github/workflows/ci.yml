@@ -36,3 +36,51 @@ jobs:
 
       - name: Build
         run: CGO_ENABLED=1 go build -o postgres-mcp-go ./cmd/postgres-mcp-go
+
+  # The unit tests cannot see a Postgres catalog, and the things most likely to
+  # break are version differences: renamed statistics columns, changed function
+  # signatures. Those only show up against a real server.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name itpg -p 5432:5432 \
+            -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=itest \
+            -c shared_preload_libraries=pg_stat_statements \
+            postgres:18
+          for i in $(seq 1 30); do
+            docker exec itpg pg_isready -U postgres -d itest && break
+            sleep 1
+          done
+
+      - name: Install hypopg
+        # hypopg is not part of contrib, so the test for it skips when this fails.
+        # Nothing else depends on it, hence "|| true".
+        run: |
+          docker exec -u root itpg bash -c \
+            "apt-get update -qq && apt-get install -y --no-install-recommends postgresql-18-hypopg" \
+            && docker exec itpg psql -U postgres -d itest -c "CREATE EXTENSION hypopg" \
+            || echo "::notice::hypopg unavailable; its test will skip"
+
+      - name: Create extensions
+        run: |
+          docker exec itpg psql -U postgres -d itest \
+            -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements" \
+            -c "CREATE EXTENSION IF NOT EXISTS pgstattuple"
+
+      - name: Integration tests
+        run: go test ./... -v
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/itest
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs itpg

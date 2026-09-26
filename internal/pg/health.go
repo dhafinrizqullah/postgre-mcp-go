@@ -489,11 +489,25 @@ func checkReplication(ctx context.Context, db *DB) (HealthCheck, error) {
 // instead of the operating system. A low rate means the working set does not fit
 // in memory.
 func checkBuffers(ctx context.Context, db *DB) (HealthCheck, error) {
-	row, err := db.QueryOne(ctx, `
+	// PostgreSQL 18 split pg_statio_user_tables' single blks_hit/blks_read pair
+	// into per-structure columns. The two forms have nothing in common, so the
+	// expression is chosen by version rather than probed.
+	hitExpr, readExpr := "blks_hit", "blks_read"
+	version, err := db.Version(ctx)
+	if err != nil {
+		return HealthCheck{}, err
+	}
+	if version >= 180000 {
+		// Heap and index traffic are what a table's working set is made of;
+		// toast and toast-index traffic belongs to large values, not the table.
+		hitExpr, readExpr = "heap_blks_hit + idx_blks_hit", "heap_blks_read + idx_blks_read"
+	}
+
+	row, err := db.QueryOne(ctx, fmt.Sprintf(`
 		SELECT
-			sum(blks_hit) AS hit,
-			sum(blks_read) AS read
-		FROM pg_statio_user_tables`)
+			sum(%s) AS hit,
+			sum(%s) AS read
+		FROM pg_statio_user_tables`, hitExpr, readExpr))
 	if err != nil {
 		return HealthCheck{}, err
 	}
@@ -510,12 +524,14 @@ func checkBuffers(ctx context.Context, db *DB) (HealthCheck, error) {
 	}
 	rate := float64(hit) / float64(hit+read)
 
-	worst, err := db.Query(ctx, `
-		SELECT relname, schemaname, blks_hit, blks_read
+	worst, err := db.Query(ctx, fmt.Sprintf(`
+		SELECT relname, schemaname,
+			%s AS hit,
+			%s AS read
 		FROM pg_statio_user_tables
-		WHERE blks_hit + blks_read > 1000
-		ORDER BY (blks_read::float / NULLIF(blks_hit + blks_read, 0)) DESC
-		LIMIT 5`)
+		WHERE (%s + %s) > 1000
+		ORDER BY (%s::float / NULLIF(%s + %s, 0)) DESC
+		LIMIT 5`, hitExpr, readExpr, hitExpr, readExpr, readExpr, hitExpr, readExpr))
 	if err != nil {
 		return HealthCheck{}, err
 	}
@@ -534,15 +550,15 @@ func checkBuffers(ctx context.Context, db *DB) (HealthCheck, error) {
 		})
 	}
 	for _, r := range worst {
-		total := intOf(r, "blks_hit") + intOf(r, "blks_read")
-		if float64(intOf(r, "blks_read"))/float64(total) < 0.01 {
+		total := intOf(r, "hit") + intOf(r, "read")
+		if float64(intOf(r, "read"))/float64(total) < 0.01 {
 			continue
 		}
 		findings = append(findings, Finding{
 			Severity: SeverityInfo,
 			Message: fmt.Sprintf("%s.%s reads %.1f%% of its blocks from disk",
 				str(r, "schemaname"), str(r, "relname"),
-				float64(intOf(r, "blks_read"))/float64(total)*100),
+				float64(intOf(r, "read"))/float64(total)*100),
 			Details: r,
 		})
 	}

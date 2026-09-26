@@ -171,11 +171,12 @@ func addTopQueries(srv *mcp.Server, db *pg.DB) {
 		}
 		queries, err := db.TopQueries(ctx, in.SortBy, in.Limit)
 		if errors.Is(err, pg.ErrNoStatStatements) {
-			// Not a failure: a missing extension is a setup step, and the
-			// tools that do work are worth naming here.
+			// Not a failure: this is a setup step, and the tools that do work are
+			// worth naming here.
 			return errorResult(errors.New(
-				"pg_stat_statements is not installed. Install it and set " +
-					"shared_preload_libraries = 'pg_stat_statements', then restart. " +
+				"pg_stat_statements is not available. It must be installed " +
+					"(CREATE EXTENSION pg_stat_statements) and listed in " +
+					"shared_preload_libraries, which needs a restart. " +
 					"Until then, use analyze_db_health and explain_query")), nil, nil
 		}
 		if err != nil {

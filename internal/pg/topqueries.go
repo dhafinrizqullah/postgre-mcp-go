@@ -2,9 +2,16 @@ package pg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// pgErrCodeObjectNotInPrerequisiteState is SQLSTATE 55000, which Postgres raises
+// when an extension is installed but its shared library is not preloaded.
+const pgErrCodeObjectNotInPrerequisiteState = "55000"
 
 // TopQuery is one row of get_top_queries.
 type TopQuery struct {
@@ -16,10 +23,11 @@ type TopQuery struct {
 	Score     float64 `json:"score,omitempty"`
 }
 
-// ErrNoStatStatements is returned when pg_stat_statements is not installed.
-// Callers turn it into installation instructions instead of an error, because a
-// missing extension is a setup step, not a failure.
-var ErrNoStatStatements = fmt.Errorf("pg_stat_statements is not installed")
+// ErrNoStatStatements is returned when pg_stat_statements cannot be queried:
+// either it is not installed, or it is installed without being listed in
+// shared_preload_libraries. Callers turn it into installation instructions
+// instead of an error, because both are setup steps, not failures.
+var ErrNoStatStatements = fmt.Errorf("pg_stat_statements is not available")
 
 // TopQueries ranks queries recorded by pg_stat_statements.
 //
@@ -79,6 +87,13 @@ func (db *DB) TopQueries(ctx context.Context, sortBy string, limit int) ([]TopQu
 		ORDER BY %s DESC
 		LIMIT $1`, totalCol, meanCol, orderBy, orderBy), limit)
 	if err != nil {
+		// The extension can be installed without being listed in
+		// shared_preload_libraries, and then every query against it fails with
+		// object_not_in_prerequisite_state. That is a setup step, not a failure.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgErrCodeObjectNotInPrerequisiteState {
+			return nil, ErrNoStatStatements
+		}
 		return nil, err
 	}
 
