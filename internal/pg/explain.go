@@ -31,7 +31,8 @@ func (h HypotheticalIndex) Definition() (string, error) {
 // replaces with its own <NNNNN>btree_table_columns tag.
 //
 // Identifiers are quoted, because a table or column may be a reserved word or
-// mixed case, and a sort direction is left outside the quotes.
+// mixed case, and a sort direction is left outside the quotes. A table may be
+// schema-qualified, so each dotted part is quoted separately.
 func HypopgIndexDefinition(table string, columns []string, using string) (string, error) {
 	if table == "" {
 		return "", fmt.Errorf("hypothetical index needs a table")
@@ -46,9 +47,20 @@ func HypopgIndexDefinition(table string, columns []string, using string) (string
 	if !safeIdentifier.MatchString(method) {
 		return "", fmt.Errorf("invalid index method %q", method)
 	}
-	if !safeIdentifier.MatchString(table) {
-		return "", fmt.Errorf("invalid table name %q", table)
+	parts := strings.Split(table, ".")
+	if len(parts) > 2 {
+		return "", fmt.Errorf("table name %q has more than a schema and a table", table)
 	}
+	for _, part := range parts {
+		if !safeIdentifier.MatchString(part) {
+			return "", fmt.Errorf("invalid table name %q", table)
+		}
+	}
+	qualified := make([]string, 0, len(parts))
+	for _, part := range parts {
+		qualified = append(qualified, quoteIdent(part))
+	}
+
 	rendered := make([]string, 0, len(columns))
 	names := make([]string, 0, len(columns))
 	for _, column := range columns {
@@ -63,8 +75,9 @@ func HypopgIndexDefinition(table string, columns []string, using string) (string
 		}
 		rendered = append(rendered, quoteIdent(name)+" "+direction)
 	}
+	indexName := hypopgIndexName(strings.Join(parts, "_"), names, method)
 	return fmt.Sprintf("CREATE INDEX %s ON %s USING %s (%s)",
-		hypopgIndexName(table, names, method), quoteIdent(table), method, strings.Join(rendered, ", ")), nil
+		indexName, strings.Join(qualified, "."), method, strings.Join(rendered, ", ")), nil
 }
 
 // splitDirection separates a sort direction from a column name, so that

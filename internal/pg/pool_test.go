@@ -34,7 +34,8 @@ func TestParseVersion(t *testing.T) {
 }
 
 // TestHypotheticalIndexDefinition checks the one place this package builds SQL
-// out of caller input. Anything that gets past Definition reaches a hypopg call.
+// out of caller input. The result is parsed as SQL by hypopg, so a name that
+// survives this is parsed as an identifier and nothing else.
 func TestHypotheticalIndexDefinition(t *testing.T) {
 	t.Parallel()
 
@@ -44,20 +45,42 @@ func TestHypotheticalIndexDefinition(t *testing.T) {
 		want string
 		bad  bool
 	}{
-		{name: "single column defaults to btree",
+		{
+			name: "single column defaults to btree",
 			in:   HypotheticalIndex{Table: "users", Columns: []string{"email"}},
-			want: `CREATE INDEX hypopg_idx_users_email_1 ON "users" USING btree ("email")`},
-		{name: "a sort direction stays outside the quotes",
+			want: `CREATE INDEX hypopg_idx_users_email_1 ON "users" USING btree ("email")`,
+		},
+		{
+			name: "a sort direction stays outside the quotes",
 			in:   HypotheticalIndex{Table: "orders", Columns: []string{"user_id", "created_at DESC"}, Using: "gist"},
-			want: `CREATE INDEX hypopg_idx_orders_user_id_created_at_2_gist ON "orders" USING gist ("user_id", "created_at" DESC)`},
+			want: `CREATE INDEX hypopg_idx_orders_user_id_created_at_2_gist ON "orders" USING gist ("user_id", "created_at" DESC)`,
+		},
+		{
+			name: "a schema-qualified table has each part quoted",
+			in:   HypotheticalIndex{Table: "reporting.orders", Columns: []string{"user_id"}},
+			want: `CREATE INDEX hypopg_idx_reporting_orders_user_id_1 ON "reporting"."orders" USING btree ("user_id")`,
+		},
+		{
+			name: "a mixed-case identifier is quoted, not rejected",
+			in:   HypotheticalIndex{Table: "Users", Columns: []string{"Email"}},
+			want: `CREATE INDEX hypopg_idx_Users_Email_1 ON "Users" USING btree ("Email")`,
+		},
 		{name: "missing table is rejected",
 			in: HypotheticalIndex{Columns: []string{"a"}}, bad: true},
 		{name: "missing columns are rejected",
 			in: HypotheticalIndex{Table: "users"}, bad: true},
-		{name: "injected definition is rejected",
-			in: HypotheticalIndex{Table: "users", Columns: []string{"a)) AS SELECT 1 --"}}, bad: true},
 		{name: "empty column is rejected",
 			in: HypotheticalIndex{Table: "users", Columns: []string{""}}, bad: true},
+		{name: "a column that closes the statement is rejected",
+			in: HypotheticalIndex{Table: "users", Columns: []string{"a)) AS SELECT 1 --"}}, bad: true},
+		{name: "an injected table name is rejected",
+			in: HypotheticalIndex{Table: "users; DROP TABLE x", Columns: []string{"a"}}, bad: true},
+		{name: "an injected method is rejected",
+			in: HypotheticalIndex{Table: "users", Columns: []string{"a"}, Using: "btree; DROP TABLE x"}, bad: true},
+		{name: "three dotted parts are rejected",
+			in: HypotheticalIndex{Table: "a.b.c", Columns: []string{"x"}}, bad: true},
+		{name: "a column expression is rejected",
+			in: HypotheticalIndex{Table: "users", Columns: []string{"lower(email)"}}, bad: true},
 	}
 	for _, tc := range cases {
 		got, err := tc.in.Definition()
