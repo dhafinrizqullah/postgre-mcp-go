@@ -52,10 +52,10 @@ jobs:
 
       - name: Start PostgreSQL
         run: |
+          # Arguments after the image name are passed to postgres, not to docker.
           docker run -d --name itpg -p 5432:5432 \
             -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=itest \
-            -c shared_preload_libraries=pg_stat_statements \
-            postgres:18
+            postgres:18 -c shared_preload_libraries=pg_stat_statements
           for i in $(seq 1 30); do
             docker exec itpg pg_isready -U postgres -d itest && break
             sleep 1
