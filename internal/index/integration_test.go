@@ -190,7 +190,7 @@ func TestTuneDoesNotRecommendWhenAlreadyIndexed(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer admin.Close(ctx)
+		defer func() { _ = admin.Close(ctx) }()
 		_, _ = admin.Exec(ctx, `DROP INDEX IF EXISTS tuner_events_tenant_status`)
 		_, _ = admin.Exec(ctx, `ANALYZE tuner_events`)
 	})
