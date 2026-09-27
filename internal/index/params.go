@@ -314,10 +314,17 @@ func (p *paramCollector) compare(scope *queryScope, left, right *pg_query.Node) 
 	return count
 }
 
-// numberOf reports the 1-based number of a bind parameter node.
+// numberOf reports the 1-based number of a bind parameter, looking through a
+// cast or a collation annotation. `$1::int` parses as a TypeCast around the
+// parameter, and without looking through it the parameter is invisible.
 func numberOf(node *pg_query.Node) (int, bool) {
-	if ref, ok := unwrap(node).(*pg_query.ParamRef); ok {
-		return int(ref.GetNumber()), true
+	switch n := unwrap(node).(type) {
+	case *pg_query.ParamRef:
+		return int(n.GetNumber()), true
+	case *pg_query.TypeCast:
+		return numberOf(n.GetArg())
+	case *pg_query.CollateClause:
+		return numberOf(n.GetArg())
 	}
 	return 0, false
 }
@@ -326,10 +333,18 @@ func numberOf(node *pg_query.Node) (int, bool) {
 // scope's aliases. A parameter compared to an expression rather than a column has
 // no answer, which is why this returns ok=false.
 func columnOf(scope *queryScope, node *pg_query.Node) (qualifiedColumn, bool) {
-	ref, ok := unwrap(node).(*pg_query.ColumnRef)
-	if !ok {
-		return qualifiedColumn{}, false
+	switch n := unwrap(node).(type) {
+	case *pg_query.ColumnRef:
+		return columnRefOf(scope, n)
+	case *pg_query.TypeCast:
+		return columnOf(scope, n.GetArg())
+	case *pg_query.CollateClause:
+		return columnOf(scope, n.GetArg())
 	}
+	return qualifiedColumn{}, false
+}
+
+func columnRefOf(scope *queryScope, ref *pg_query.ColumnRef) (qualifiedColumn, bool) {
 	fields := fieldNames(ref)
 	switch len(fields) {
 	case 1:

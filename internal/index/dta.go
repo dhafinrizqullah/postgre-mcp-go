@@ -11,7 +11,6 @@ import (
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 
 	"github.com/dhafinrizqullah/postgre-mcp-go/internal/pg"
-	"github.com/dhafinrizqullah/postgre-mcp-go/internal/safesql"
 )
 
 // Options controls the search. The defaults are upstream's.
@@ -487,11 +486,11 @@ func (t *Tuner) cost(ctx context.Context, config []Candidate) (float64, error) {
 	var total float64
 	var measured int
 	err := t.db.WithConn(ctx, func(ctx context.Context, s *pg.Session) error {
-		if err := t.resetHypopg(ctx, s); err != nil {
+		if err := pg.ResetHypopg(ctx, s); err != nil {
 			return err
 		}
 		for _, candidate := range config {
-			if err := createHypopgIndex(ctx, s, candidate.Definition()); err != nil {
+			if err := pg.CreateHypopgIndex(ctx, s, candidate.Definition()); err != nil {
 				return err
 			}
 		}
@@ -507,7 +506,7 @@ func (t *Tuner) cost(ctx context.Context, config []Candidate) (float64, error) {
 			total += cost * q.weight()
 			measured++
 		}
-		return t.resetHypopg(ctx, s)
+		return pg.ResetHypopg(ctx, s)
 	})
 	if err != nil {
 		return 0, err
@@ -520,33 +519,6 @@ func (t *Tuner) cost(ctx context.Context, config []Candidate) (float64, error) {
 	return avg, nil
 }
 
-// createHypopgIndex asks hypopg to simulate one index for this session.
-//
-// hypopg parses its argument as an index definition, and a bind parameter is not
-// usable there: the function sees a placeholder rather than a definition and
-// fails with a syntax error on the method name. The definition is therefore
-// inlined as a quoted literal, and the whole statement is then run past
-// safesql.Validate, which rejects anything that is not a single call to an
-// allowlisted function. The literal cannot break out on its own either, since
-// every quote in it is doubled.
-func createHypopgIndex(ctx context.Context, s *pg.Session, definition string) error {
-	statement := "SELECT hypopg_create_index('" + strings.ReplaceAll(definition, "'", "''") + "')"
-	if err := safesql.Validate(statement); err != nil {
-		return fmt.Errorf("refusing to simulate %s: %w", definition, err)
-	}
-	if _, err := s.Query(ctx, statement); err != nil {
-		return fmt.Errorf("simulating index %s: %w", definition, err)
-	}
-	return nil
-}
-
-func (t *Tuner) resetHypopg(ctx context.Context, s *pg.Session) error {
-	if _, err := s.Query(ctx, "SELECT hypopg_reset()"); err != nil {
-		return fmt.Errorf("resetting simulated indexes: %w", err)
-	}
-	return nil
-}
-
 // size prefers hypopg's estimate, because it is the server's own, and falls back
 // to column statistics.
 func (t *Tuner) size(ctx context.Context, candidate Candidate) (int64, error) {
@@ -555,11 +527,11 @@ func (t *Tuner) size(ctx context.Context, candidate Candidate) (int64, error) {
 	}
 	var size int64
 	err := t.db.WithConn(ctx, func(ctx context.Context, s *pg.Session) error {
-		if err := t.resetHypopg(ctx, s); err != nil {
+		if err := pg.ResetHypopg(ctx, s); err != nil {
 			return err
 		}
-		defer func() { _ = t.resetHypopg(ctx, s) }()
-		if err := createHypopgIndex(ctx, s, candidate.Definition()); err != nil {
+		defer func() { _ = pg.ResetHypopg(ctx, s) }()
+		if err := pg.CreateHypopgIndex(ctx, s, candidate.Definition()); err != nil {
 			return err
 		}
 		rows, err := s.Query(ctx,
@@ -604,23 +576,42 @@ func planCost(rows []map[string]any) (float64, error) {
 	if len(rows) == 0 {
 		return 0, fmt.Errorf("EXPLAIN returned no rows")
 	}
-	encoded, err := jsonBytes(rows[0])
-	if err != nil {
-		return 0, err
+	// The value is a list holding one plan object, but the driver may hand it
+	// back as decoded JSON or as text, so both are accepted.
+	var payload any
+	for key, value := range rows[0] {
+		if strings.EqualFold(key, "QUERY PLAN") {
+			payload = value
+			break
+		}
 	}
-	// EXPLAIN FORMAT JSON returns a list holding one object with a Plan key.
-	var payload []struct {
+	if payload == nil {
+		return 0, fmt.Errorf("EXPLAIN result has no QUERY PLAN column")
+	}
+
+	var plans []struct {
 		Plan struct {
 			TotalCost float64 `json:"Total Cost"`
 		} `json:"Plan"`
 	}
-	if err := jsonUnmarshal(encoded, &payload); err != nil {
-		return 0, fmt.Errorf("decoding the plan: %w", err)
+	switch typed := payload.(type) {
+	case string:
+		if err := jsonUnmarshal([]byte(typed), &plans); err != nil {
+			return 0, fmt.Errorf("decoding the plan: %w", err)
+		}
+	default:
+		encoded, err := jsonBytes(payload)
+		if err != nil {
+			return 0, fmt.Errorf("re-encoding the plan: %w", err)
+		}
+		if err := jsonUnmarshal(encoded, &plans); err != nil {
+			return 0, fmt.Errorf("decoding the plan: %w", err)
+		}
 	}
-	if len(payload) == 0 {
+	if len(plans) == 0 {
 		return 0, fmt.Errorf("EXPLAIN returned an empty plan")
 	}
-	cost := payload[0].Plan.TotalCost
+	cost := plans[0].Plan.TotalCost
 	if cost <= 0 {
 		return 0, fmt.Errorf("EXPLAIN reported a cost of %v, which means the query was not planned", cost)
 	}

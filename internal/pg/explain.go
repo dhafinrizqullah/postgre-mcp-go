@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/dhafinrizqullah/postgre-mcp-go/internal/safesql"
 )
 
 // HypotheticalIndex is an index to simulate with the hypopg extension. hypopg
@@ -72,6 +74,36 @@ func (db *DB) Explain(ctx context.Context, sql string, hypothetical []Hypothetic
 	return db.explainWithHypopg(ctx, sql, defs)
 }
 
+// CreateHypopgIndex asks hypopg to simulate one index in the current session.
+//
+// hypopg parses its argument as an index definition, and a bind parameter cannot
+// be used there: the function sees a placeholder instead of a definition and
+// fails with a syntax error on the method name. The definition is therefore
+// inlined as a quoted literal, and the statement is run past safesql.Validate
+// before it is sent, so it is checked against the same allowlist as any other
+// statement. The literal cannot break out either, since every quote in it is
+// doubled.
+func CreateHypopgIndex(ctx context.Context, s *Session, definition string) error {
+	statement := "SELECT hypopg_create_index('" + strings.ReplaceAll(definition, "'", "''") + "')"
+	if err := safesql.Validate(statement); err != nil {
+		return fmt.Errorf("refusing to simulate %s: %w", definition, err)
+	}
+	if _, err := s.Query(ctx, statement); err != nil {
+		return fmt.Errorf("simulating index %s: %w", definition, err)
+	}
+	return nil
+}
+
+// ResetHypopg drops every simulated index in the current session. A caller that
+// borrows a connection must always do this, or the next borrow inherits indexes it
+// did not ask for.
+func ResetHypopg(ctx context.Context, s *Session) error {
+	if _, err := s.Query(ctx, "SELECT hypopg_reset()"); err != nil {
+		return fmt.Errorf("resetting simulated indexes: %w", err)
+	}
+	return nil
+}
+
 func (db *DB) explainWithHypopg(ctx context.Context, sql string, defs []string) (json.RawMessage, error) {
 	installed, err := db.HasExtension(ctx, "hypopg")
 	if err != nil {
@@ -83,20 +115,14 @@ func (db *DB) explainWithHypopg(ctx context.Context, sql string, defs []string) 
 
 	var plan json.RawMessage
 	err = db.WithConn(ctx, func(ctx context.Context, s *Session) error {
-		reset := func() error {
-			if _, err := s.Query(ctx, "SELECT hypopg_reset()"); err != nil {
-				return fmt.Errorf("resetting hypothetical indexes: %w", err)
-			}
-			return nil
-		}
-		if err := reset(); err != nil {
+		if err := ResetHypopg(ctx, s); err != nil {
 			return err
 		}
-		defer func() { _ = reset() }() // a leaked hypothetical index would skew the next call
+		defer func() { _ = ResetHypopg(ctx, s) }()
 
 		for _, def := range defs {
-			if _, err := s.Query(ctx, "SELECT hypopg_create_index($1)", def); err != nil {
-				return fmt.Errorf("creating hypothetical index %s: %w", def, err)
+			if err := CreateHypopgIndex(ctx, s, def); err != nil {
+				return err
 			}
 		}
 		rows, err := s.Query(ctx, "EXPLAIN (FORMAT JSON) "+sql)
