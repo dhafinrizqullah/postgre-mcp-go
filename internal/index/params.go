@@ -228,12 +228,12 @@ func literalFor(typeName, value string) string {
 	if numericTypes[typeName] {
 		return value
 	}
-	switch typeName {
-	case "bool":
-		if value == "t" || value == "true" {
+	if typeName == "bool" {
+		// pg_stats reports booleans as t/f.
+		switch value {
+		case "t", "true":
 			return "TRUE"
-		}
-		if value == "f" || value == "false" {
+		case "f", "false":
 			return "FALSE"
 		}
 	}
