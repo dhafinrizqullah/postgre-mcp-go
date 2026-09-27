@@ -42,6 +42,8 @@ func New(db *pg.DB, logger *slog.Logger) *mcp.Server {
 	addTopQueries(srv, db)
 	addExplainQuery(srv, db)
 	addDatabaseHealth(srv, db)
+	addQueryIndexes(srv, db)
+	addWorkloadIndexes(srv, db)
 	return srv
 }
 
@@ -49,16 +51,20 @@ var readOnly = &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: boolPtr(f
 
 func boolPtr(b bool) *bool { return &b }
 
-// jsonResult renders a value as indented JSON text, which is what an LLM reads
-// best. Structured output is left unset so the response stays plain text.
+// textResult wraps rendered text, which is the form the model reads best.
+// Structured output is left unset so the response stays plain text.
+func textResult(text string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+}
+
+// jsonResult renders a value as indented JSON text. Structured output is left
+// unset so the response stays plain text.
 func jsonResult(v any) (*mcp.CallToolResult, any, error) {
 	encoded, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return errorResult(fmt.Errorf("encoding result: %w", err)), nil, nil
 	}
-	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
-	}, nil, nil
+	return textResult(string(encoded)), nil, nil
 }
 
 // errorResult reports a failure the model should read and react to, rather than
@@ -221,9 +227,7 @@ func addExplainQuery(srv *mcp.Server, db *pg.DB) {
 		if err != nil {
 			return errorResult(err), nil, nil
 		}
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: string(plan)}},
-		}, nil, nil
+		return textResult(string(plan)), nil, nil
 	})
 }
 

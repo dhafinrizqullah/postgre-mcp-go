@@ -112,6 +112,64 @@ func (db *DB) TopQueries(ctx context.Context, sortBy string, limit int) ([]TopQu
 	return out, nil
 }
 
+// SlowQuery is a normalised statement from pg_stat_statements, with the weight
+// the index tuner needs to rank it.
+type SlowQuery struct {
+	Text       string
+	Calls      int64
+	MeanTimeMS float64
+}
+
+// SlowQueries returns the slowest statements by mean time, for the index tuner to
+// work on. Statements are already normalised, so they carry bind parameters.
+func (db *DB) SlowQueries(ctx context.Context, minCalls int, minMeanTimeMS float64, limit int) ([]SlowQuery, error) {
+	installed, err := db.HasExtension(ctx, "pg_stat_statements")
+	if err != nil {
+		return nil, err
+	}
+	if !installed {
+		return nil, ErrNoStatStatements
+	}
+	version, err := db.Version(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// PostgreSQL 13 renamed the timing columns.
+	meanCol := "mean_exec_time"
+	if version < 130000 {
+		meanCol = "mean_time"
+	}
+	if limit <= 0 {
+		limit = 10
+	}
+
+	rows, err := db.Query(ctx, fmt.Sprintf(`
+		SELECT query, calls, %s AS mean_time
+		FROM pg_stat_statements
+		WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+		  AND calls >= $1
+		  AND %s >= $2
+		ORDER BY calls * %s DESC
+		LIMIT $3`, meanCol, meanCol, meanCol), minCalls, minMeanTimeMS, limit)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == pgErrCodeObjectNotInPrerequisiteState {
+			return nil, ErrNoStatStatements
+		}
+		return nil, err
+	}
+
+	out := make([]SlowQuery, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, SlowQuery{
+			Text:       str(row, "query"),
+			Calls:      intOf(row, "calls"),
+			MeanTimeMS: floatOf(row, "mean_time"),
+		})
+	}
+	return out, nil
+}
+
 // TruncateSQL shortens a query for display without breaking its shape.
 func TruncateSQL(sql string, max int) string {
 	sql = strings.Join(strings.Fields(sql), " ")
