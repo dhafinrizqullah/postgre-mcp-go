@@ -102,11 +102,6 @@ func (db *DB) WithConn(ctx context.Context, fn func(context.Context, *Session) e
 	return fn(ctx, &Session{conn: conn})
 }
 
-// WithConnErr is WithConn for a diagnostic that only cares about the error.
-func (db *DB) WithConnErr(ctx context.Context, fn func(context.Context, *Session) error) error {
-	return db.WithConn(ctx, fn)
-}
-
 // scanRows drains a result set into maps keyed by column name.
 func scanRows(rows pgx.Rows, err error) ([]map[string]any, error) {
 	if err != nil {

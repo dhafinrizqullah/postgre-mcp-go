@@ -86,13 +86,10 @@ func (c Candidate) key() string {
 	return c.Table + "(" + strings.Join(c.Columns, ",") + ")"
 }
 
-// Definition renders the index in the form hypopg and CREATE INDEX both accept.
-func (c Candidate) Definition() string {
-	method := c.Using
-	if method == "" {
-		method = "btree"
-	}
-	return fmt.Sprintf("%s (%s (%s))", method, c.Table, strings.Join(c.Columns, ", "))
+// Definition renders the index as hypopg expects it: a full CREATE INDEX
+// statement, which hypopg parses and simulates without creating anything.
+func (c Candidate) Definition() (string, error) {
+	return pg.HypopgIndexDefinition(c.Table, c.Columns, c.Using)
 }
 
 // Recommendation is a proposed index, with what the planner said about it.
@@ -490,7 +487,11 @@ func (t *Tuner) cost(ctx context.Context, config []Candidate) (float64, error) {
 			return err
 		}
 		for _, candidate := range config {
-			if err := pg.CreateHypopgIndex(ctx, s, candidate.Definition()); err != nil {
+			definition, err := candidate.Definition()
+			if err != nil {
+				return err
+			}
+			if err := pg.CreateHypopgIndex(ctx, s, definition); err != nil {
 				return err
 			}
 		}
@@ -531,7 +532,11 @@ func (t *Tuner) size(ctx context.Context, candidate Candidate) (int64, error) {
 			return err
 		}
 		defer func() { _ = pg.ResetHypopg(ctx, s) }()
-		if err := pg.CreateHypopgIndex(ctx, s, candidate.Definition()); err != nil {
+		definition, err := candidate.Definition()
+		if err != nil {
+			return err
+		}
+		if err := pg.CreateHypopgIndex(ctx, s, definition); err != nil {
 			return err
 		}
 		rows, err := s.Query(ctx,

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/dhafinrizqullah/postgre-mcp-go/internal/safesql"
@@ -18,27 +20,86 @@ type HypotheticalIndex struct {
 	Using   string   `json:"using,omitempty"`
 }
 
-// Definition renders the index as hypopg expects it, e.g.
-// "btree (orders (user_id, created_at DESC))".
+// Definition renders the index as hypopg expects it.
 func (h HypotheticalIndex) Definition() (string, error) {
-	if h.Table == "" {
+	return HypopgIndexDefinition(h.Table, h.Columns, h.Using)
+}
+
+// HypopgIndexDefinition renders a full CREATE INDEX statement for hypopg to
+// simulate. hypopg parses this string as SQL and never creates anything, so the
+// statement still has to be valid; the index name is a placeholder that hypopg
+// replaces with its own <NNNNN>btree_table_columns tag.
+//
+// Identifiers are quoted, because a table or column may be a reserved word or
+// mixed case, and a sort direction is left outside the quotes.
+func HypopgIndexDefinition(table string, columns []string, using string) (string, error) {
+	if table == "" {
 		return "", fmt.Errorf("hypothetical index needs a table")
 	}
-	if len(h.Columns) == 0 {
-		return "", fmt.Errorf("hypothetical index on %q needs at least one column", h.Table)
+	if len(columns) == 0 {
+		return "", fmt.Errorf("hypothetical index on %q needs at least one column", table)
 	}
-	method := h.Using
+	method := using
 	if method == "" {
 		method = "btree"
 	}
-	cols := make([]string, 0, len(h.Columns))
-	for _, c := range h.Columns {
-		if c == "" || strings.ContainsAny(c, "(),") {
-			return "", fmt.Errorf("invalid column %q in hypothetical index on %q", c, h.Table)
-		}
-		cols = append(cols, c)
+	if !safeIdentifier.MatchString(method) {
+		return "", fmt.Errorf("invalid index method %q", method)
 	}
-	return fmt.Sprintf("%s (%s (%s))", method, h.Table, strings.Join(cols, ", ")), nil
+	if !safeIdentifier.MatchString(table) {
+		return "", fmt.Errorf("invalid table name %q", table)
+	}
+	rendered := make([]string, 0, len(columns))
+	names := make([]string, 0, len(columns))
+	for _, column := range columns {
+		name, direction := splitDirection(column)
+		if !safeIdentifier.MatchString(name) {
+			return "", fmt.Errorf("invalid column %q in hypothetical index on %q", column, table)
+		}
+		names = append(names, name)
+		if direction == "" {
+			rendered = append(rendered, quoteIdent(name))
+			continue
+		}
+		rendered = append(rendered, quoteIdent(name)+" "+direction)
+	}
+	return fmt.Sprintf("CREATE INDEX %s ON %s USING %s (%s)",
+		hypopgIndexName(table, names, method), quoteIdent(table), method, strings.Join(rendered, ", ")), nil
+}
+
+// splitDirection separates a sort direction from a column name, so that
+// `created_at DESC` becomes `created_at` plus `DESC`, not one quoted identifier.
+func splitDirection(column string) (name, direction string) {
+	fields := strings.Fields(column)
+	switch len(fields) {
+	case 1:
+		return fields[0], ""
+	case 2:
+		if upper := strings.ToUpper(fields[1]); upper == "ASC" || upper == "DESC" {
+			return fields[0], upper
+		}
+	}
+	return "", "" // more than one word and not a plain direction: rejected below
+}
+
+// safeIdentifier is deliberately strict. The value is quoted on the way in, but
+// it is also parsed as SQL by hypopg, so an expression index or a crafted name is
+// refused rather than quoted into something unexpected.
+var safeIdentifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_$]*$`)
+
+func quoteIdent(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
+// hypopgIndexName builds the placeholder name. hypopg replaces it with its own
+// <NNNNN>btree_table_columns tag, which is what makes a simulated index
+// recognisable in a plan.
+func hypopgIndexName(table string, columns []string, method string) string {
+	name := "hypopg_idx_" + table + "_" + strings.Join(columns, "_") + "_" + strconv.Itoa(len(columns))
+	if method != "btree" {
+		name += "_" + method
+	}
+	return name
 }
 
 // Explain returns the plan for sql as the JSON object EXPLAIN (FORMAT JSON)

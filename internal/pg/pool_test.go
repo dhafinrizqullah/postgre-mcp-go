@@ -46,10 +46,10 @@ func TestHypotheticalIndexDefinition(t *testing.T) {
 	}{
 		{name: "single column defaults to btree",
 			in:   HypotheticalIndex{Table: "users", Columns: []string{"email"}},
-			want: "btree (users (email))"},
-		{name: "method and order are kept",
+			want: `CREATE INDEX hypopg_idx_users_email_1 ON "users" USING btree ("email")`},
+		{name: "a sort direction stays outside the quotes",
 			in:   HypotheticalIndex{Table: "orders", Columns: []string{"user_id", "created_at DESC"}, Using: "gist"},
-			want: "gist (orders (user_id, created_at DESC))"},
+			want: `CREATE INDEX hypopg_idx_orders_user_id_created_at_2_gist ON "orders" USING gist ("user_id", "created_at" DESC)`},
 		{name: "missing table is rejected",
 			in: HypotheticalIndex{Columns: []string{"a"}}, bad: true},
 		{name: "missing columns are rejected",
