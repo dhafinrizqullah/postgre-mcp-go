@@ -2,22 +2,6 @@ MIT License
 
 Copyright (c) 2026 dhafinrizqullah
 
-This project is an independent Go implementation of the interface and behaviour
-of crystaldba/postgres-mcp. It contains no code copied from that project, but
-internal/safesql/allowlist_gen.go is generated from its source file and
-transcribes its curated lists of statement types, AST node types, function
-names, and extension names.
-
-The original is MIT licensed, and it is copyright © 2025 Crystal Corp. Its
-license text follows, as the MIT license requires for the material derived from
-it.
-
----
-
-MIT License
-
-Copyright (c) 2025, Crystal Corp.
-
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights

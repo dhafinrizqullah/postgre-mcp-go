@@ -116,3 +116,7 @@ python3 tools/gen_allowlist.py ../postgres-mcp/src/postgres_mcp/sql/safe_sql.py 
 Deliberate differences from upstream live in `goPortAdditions` in
 `internal/safesql/safesql.go`, never in the generated file, so that diffing the generated
 output against upstream stays a meaningful review.
+
+Keep `LICENSE` as the canonical MIT text with nothing before it, or GitHub stops
+detecting the licence and the repository shows as unlicensed. Derived material and the
+upstream copyright go in `NOTICE`.
