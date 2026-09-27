@@ -11,6 +11,7 @@ import (
 	pg_query "github.com/pganalyze/pg_query_go/v6"
 
 	"github.com/dhafinrizqullah/postgre-mcp-go/internal/pg"
+	"github.com/dhafinrizqullah/postgre-mcp-go/internal/safesql"
 )
 
 // Options controls the search. The defaults are upstream's.
@@ -208,6 +209,13 @@ func (t *Tuner) Analyze(ctx context.Context, workload []Query) (*Result, error) 
 
 	result := &Result{}
 	t.analyse(ctx, workload)
+	if len(t.queries) == 0 {
+		// Nothing survived analysis. Say which queries and why, rather than
+		// failing later on an empty workload.
+		result.SkippedQueries = t.skipped
+		result.Elapsed = time.Since(started).Round(time.Millisecond).String()
+		return result, nil
+	}
 
 	tables := map[string]bool{}
 	for _, q := range t.queries {
@@ -483,8 +491,8 @@ func (t *Tuner) cost(ctx context.Context, config []Candidate) (float64, error) {
 			return err
 		}
 		for _, candidate := range config {
-			if _, err := s.Query(ctx, "SELECT hypopg_create_index($1)", candidate.Definition()); err != nil {
-				return fmt.Errorf("simulating index %s: %w", candidate.key(), err)
+			if err := createHypopgIndex(ctx, s, candidate.Definition()); err != nil {
+				return err
 			}
 		}
 		for _, q := range t.queries {
@@ -512,6 +520,26 @@ func (t *Tuner) cost(ctx context.Context, config []Candidate) (float64, error) {
 	return avg, nil
 }
 
+// createHypopgIndex asks hypopg to simulate one index for this session.
+//
+// hypopg parses its argument as an index definition, and a bind parameter is not
+// usable there: the function sees a placeholder rather than a definition and
+// fails with a syntax error on the method name. The definition is therefore
+// inlined as a quoted literal, and the whole statement is then run past
+// safesql.Validate, which rejects anything that is not a single call to an
+// allowlisted function. The literal cannot break out on its own either, since
+// every quote in it is doubled.
+func createHypopgIndex(ctx context.Context, s *pg.Session, definition string) error {
+	statement := "SELECT hypopg_create_index('" + strings.ReplaceAll(definition, "'", "''") + "')"
+	if err := safesql.Validate(statement); err != nil {
+		return fmt.Errorf("refusing to simulate %s: %w", definition, err)
+	}
+	if _, err := s.Query(ctx, statement); err != nil {
+		return fmt.Errorf("simulating index %s: %w", definition, err)
+	}
+	return nil
+}
+
 func (t *Tuner) resetHypopg(ctx context.Context, s *pg.Session) error {
 	if _, err := s.Query(ctx, "SELECT hypopg_reset()"); err != nil {
 		return fmt.Errorf("resetting simulated indexes: %w", err)
@@ -531,8 +559,8 @@ func (t *Tuner) size(ctx context.Context, candidate Candidate) (int64, error) {
 			return err
 		}
 		defer func() { _ = t.resetHypopg(ctx, s) }()
-		if _, err := s.Query(ctx, "SELECT hypopg_create_index($1)", candidate.Definition()); err != nil {
-			return fmt.Errorf("simulating index %s: %w", candidate.key(), err)
+		if err := createHypopgIndex(ctx, s, candidate.Definition()); err != nil {
+			return err
 		}
 		rows, err := s.Query(ctx,
 			`SELECT hypopg_relation_size(indexrelid) AS size FROM hypopg_list_indexes LIMIT 1`)

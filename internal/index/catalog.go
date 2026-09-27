@@ -77,6 +77,9 @@ func (c *catalog) loadColumns(ctx context.Context, tables []string) error {
 // already exists is dropped. Signatures are compared as ordered column names,
 // which catches an existing index regardless of how it was written.
 func (c *catalog) loadExisting(ctx context.Context) error {
+	// indkey is an int2vector, not an array, so it is walked by position rather
+	// than unnest()d. Only the first indnatts entries are key columns; the rest
+	// are INCLUDE columns, which do not change what this index can seek on.
 	rows, err := c.db.Query(ctx, `
 		SELECT
 			t.relname AS table_name,
@@ -85,8 +88,8 @@ func (c *catalog) loadExisting(ctx context.Context) error {
 		FROM pg_index i
 		JOIN pg_class ic ON ic.oid = i.indexrelid
 		JOIN pg_class t ON t.oid = i.indrelid
-		JOIN LATERAL unnest(i.indnatts) WITH ORDINALITY AS k(attnum, ord) ON true
-		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+		JOIN LATERAL generate_series(1, i.indnatts) AS k(ord) ON true
+		JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[k.ord - 1]
 		WHERE i.indisvalid AND i.indisready AND NOT i.indisprimary
 		GROUP BY t.relname, ic.relname`)
 	if err != nil {

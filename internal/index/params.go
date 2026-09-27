@@ -176,17 +176,28 @@ func spliceLiterals(sql string, replacements []paramReplacement) string {
 	return out.String()
 }
 
-// sampleLiteral returns a quoted, representative literal for a column, taken from
-// the most common value the planner already knows about. Postgres does the
-// quoting, so the result is always a valid literal for the column's type.
+// sampleLiteral returns a representative literal for a column, taken from the most
+// common value the planner already knows about.
+//
+// The value comes back as text plus the column's base type, because
+// most_common_vals is an anyarray that cannot be cast to text[] and its elements
+// have to be rendered as literals of the right kind. Numeric and boolean types
+// are emitted bare, everything else is quoted with the quote doubled, so a value
+// containing a quote cannot break out of the statement.
 func (t *Tuner) sampleLiteral(ctx context.Context, table, column string) (string, error) {
 	row, err := t.db.QueryOne(ctx, `
-		SELECT quote_literal(
-		           split_part(array_to_string(most_common_vals::text[], '|'), '|', 1)) AS literal
-		FROM pg_stats
-		WHERE tablename = $1 AND attname = $2
-		  AND most_common_vals IS NOT NULL
-		  AND array_length(most_common_vals, 1) > 0
+		SELECT
+			ty.typname AS type_name,
+			array_to_json(s.most_common_vals) ->> 0 AS value
+		FROM pg_stats s
+		JOIN pg_class c ON c.relname = s.tablename
+		JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = s.schemaname
+		JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = s.attname
+		JOIN pg_type ty ON ty.oid = a.atttypid
+		WHERE s.tablename = $1
+		  AND s.attname = $2
+		  AND s.most_common_vals IS NOT NULL
+		  AND array_length(s.most_common_vals, 1) > 0
 		LIMIT 1`, table, column)
 	if err != nil {
 		return "", fmt.Errorf("sampling %s.%s: %w", table, column, err)
@@ -194,7 +205,39 @@ func (t *Tuner) sampleLiteral(ctx context.Context, table, column string) (string
 	if row == nil {
 		return "", nil
 	}
-	return str(row, "literal"), nil
+	value, ok := row["value"].(string)
+	if !ok || value == "" {
+		// The first most common value is NULL, which tells the planner nothing
+		// useful about selectivity.
+		return "", nil
+	}
+	return literalFor(rowType(row), value), nil
+}
+
+func rowType(row map[string]any) string { return str(row, "type_name") }
+
+// numericTypes are emitted bare; anything else is a quoted string.
+var numericTypes = map[string]bool{
+	"int2": true, "int4": true, "int8": true,
+	"float4": true, "float8": true,
+	"numeric": true, "money": true, "oid": true,
+}
+
+// literalFor renders a sampled value as a SQL literal of its column's type.
+func literalFor(typeName, value string) string {
+	if numericTypes[typeName] {
+		return value
+	}
+	switch typeName {
+	case "bool":
+		if value == "t" || value == "true" {
+			return "TRUE"
+		}
+		if value == "f" || value == "false" {
+			return "FALSE"
+		}
+	}
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
 // paramSite is a bind parameter found next to a column reference.
