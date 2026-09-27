@@ -47,7 +47,7 @@ func TestDiagnosticHypopgCallForms(t *testing.T) {
 		`SELECT hypopg_create_index('btree (tuner_events (status))', 'idxname')`,
 	}
 	for _, form := range forms {
-		_, err := db.WithConnErr(ctx, func(ctx context.Context, s *Session) error {
+		err := db.WithConnErr(ctx, func(ctx context.Context, s *Session) error {
 			_, qerr := s.Query(ctx, form)
 			return qerr
 		})
