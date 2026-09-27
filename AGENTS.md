@@ -28,6 +28,7 @@ Also load `samber/cc-skills-golang@golang-database` for anything touching `inter
 ```
 cmd/postgres-mcp-go/   flags, transport selection, signal handling; no business logic
 internal/mcpserver/    one function per tool, registering handlers with the MCP SDK
+internal/index/        index recommendations: AST column extraction and the greedy search
 internal/pg/           every SQL statement the server sends, plus the health checks
 internal/safesql/      decides whether a statement may be run at all
 tools/gen_allowlist.py regenerates internal/safesql/allowlist_gen.go from upstream
@@ -51,9 +52,12 @@ read-only guarantee is four independent layers. Keep all four; do not "simplify"
 
 Rules that follow from this:
 
-- Never build SQL by concatenating caller input. Use `$1` placeholders. The only
-  interpolated values are index definitions, and `HypotheticalIndex.Definition` validates
-  them character by character.
+- Never build SQL by concatenating caller input. Use `$1` placeholders. The one
+  exception is an index definition handed to `hypopg`, which is parsed as SQL by the
+  extension and so cannot be a bind parameter: `pg.HypopgIndexDefinition` validates
+  every identifier against a strict pattern and quotes it, and
+  `pg.CreateHypopgIndex` runs the whole statement past `safesql.Validate` before
+  sending it.
 - `internal/safesql` is an allowlist that fails closed. A Postgres release that adds a node
   type must cause a rejection, never a silent pass.
 - Tool handlers validate before they query. A new tool that accepts SQL must call
@@ -64,18 +68,25 @@ Rules that follow from this:
 
 `internal/safesql` has the only table test that earns its keep: it is the security
 boundary. When you add a rule, add the statement that should be rejected to that table.
-`internal/pg` tests the two parsers that silently pick wrong behaviour
-(`parseVersion`, `HypotheticalIndex.Definition`).
+`internal/index` tests the AST walks and the parameter splicer, which is where a silent
+mistake produces a wrong recommendation rather than an error. `internal/pg` tests the two
+parsers that pick wrong behaviour quietly (`parseVersion`, `HypopgIndexDefinition`).
 
 Everything else is verified against a real database, not mocked. To try it:
 
 ```sh
 make test          # unit tests, no database needed
-make smoke         # builds and runs the MCP handshake against $DATABASE_URL
+TEST_DATABASE_URL=... go test ./...   # adds the integration tests
+make smoke DATABASE_URL=...           # MCP handshake against a live database
 ```
 
 Do not add a test framework, a mocking library, or fixtures directory. If a check needs a
-database, it is a `make smoke` step.
+database, it is an integration test that skips without `TEST_DATABASE_URL`.
+
+**Keep the integration job green.** It runs a real PostgreSQL 18 with
+`pg_stat_statements`, `pgstattuple`, and `hypopg`, and it is the only thing that can see
+catalog and extension behaviour. Six defects in the index tuner passed every unit test
+and were caught only there; see `PLAN.md` for the list.
 
 ## Deliberate deviations from the skill defaults
 
@@ -86,6 +97,10 @@ database, it is a `make smoke` step.
 - **`map[string]any` rows, not generated structs.** Row shapes differ per query; a struct
   per query is noise. `jsonValue` in `internal/pg/pool.go` is the single place that turns a
   pgx value into JSON.
+- **The column extractor resolves an unqualified column through the catalog.** Upstream
+  attributes it to whichever table it happens to visit first, which recommends indexes for
+  the wrong table. Here a column in scope for several tables is looked up, and only if that
+  fails is it credited to all of them.
 
 ## Regenerating the safe-SQL allowlist
 

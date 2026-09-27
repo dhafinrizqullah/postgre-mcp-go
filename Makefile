@@ -2,7 +2,7 @@ BINARY  := postgres-mcp-go
 PKG     := ./cmd/postgres-mcp-go
 DATABASE_URL ?=
 
-.PHONY: all build test smoke lint fmt vet run docker clean
+.PHONY: all build test integration smoke lint fmt vet run docker clean
 
 all: lint test build
 
@@ -11,6 +11,12 @@ build:
 
 test:
 	go test ./...
+
+# Integration tests. They skip without a database; the CI job supplies one with
+# pg_stat_statements, pgstattuple, and hypopg.
+integration:
+	@test -n "$(TEST_DATABASE_URL)" || { echo "set TEST_DATABASE_URL"; exit 2; }
+	TEST_DATABASE_URL='$(TEST_DATABASE_URL)' go test ./...
 
 # Unit tests plus the MCP handshake against a live database. Point DATABASE_URL at a
 # throwaway Postgres: the handshake only reads, but analyze_db_health is chatty.

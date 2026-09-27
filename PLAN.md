@@ -7,26 +7,41 @@ Upstream reference: <https://github.com/crystaldba/postgres-mcp> (MIT, ~7.3k LOC
 
 ## Status
 
+All nine upstream tools are implemented and verified against a real PostgreSQL 18 with
+`pg_stat_statements`, `pgstattuple`, and `hypopg` in CI.
+
 | Phase | State |
 | --- | --- |
 | 0 — skeleton, cgo spike, both transports | done |
 | 1 — 6 tools | done |
 | 1.5 — `analyze_db_health`, 7 checks | done |
-| 2 — polish | not started |
-| 3 — index tuning (DTA) | not started |
+| 2 — durability: CI with a real database | done |
+| 3 — index tuning (DTA) | done |
 
-Verified end to end against a local PostgreSQL 18: all 7 tools return real data over
-stdio and streamable HTTP, and the security table in `internal/safesql` rejects
-multi-statement, write, function, and `LIKE $1` cases.
+Full tool parity with upstream. The two deliberate omissions:
 
-Two gaps to close before release:
+- **The LLM-driven index optimiser** (`llm_opt.py`) is not ported. Upstream calls it
+  experimental, and it needs an OpenAI key.
+- **The SSE transport** is not ported. It is deprecated in the MCP spec.
 
-- **The `hypopg` branch of `explain_query` is untested.** hypopg was not installable
-  in the test environment, so only its "extension missing" path is verified.
-  `brew install postgresql@18-hypopg`, or a CI service container, then exercise it.
-- **Index bloat has never produced a finding.** The query is valid and runs, but the
-  test tables are far below the 5 MB threshold that keeps small indexes out of the
-  report. Verify against a table with a large, deleted-from index.
+### What CI caught that local testing could not
+
+The unit tests all passed while six defects sat in the tuner, because every one of
+them needed a real planner and the `hypopg` extension:
+
+- `pg_statio_user_tables` lost `blks_hit` in PostgreSQL 18, so the buffer health check
+  failed outright.
+- `pg_index.indnatts` is a `smallint`, not an array, so `unnest()` of it did not exist.
+- `pg_stats.most_common_vals` is an `anyarray` and cannot be cast to `text[]`.
+- `hypopg_create_index` cannot take a bind parameter, and its argument must be a **full
+  `CREATE INDEX` statement**, not the `btree (table (column))` shorthand upstream's
+  comments suggest.
+- `EXPLAIN`'s value comes back decoded, not as a list.
+- A bind parameter behind a cast (`$1::int`) was invisible to the parameter sampler.
+
+This is the argument for the integration job in CI: version differences and extension
+behaviour cannot be mocked, and every one of these would have shipped broken.
+
 
 
 ---

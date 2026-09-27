@@ -3,13 +3,10 @@
 A read-only [MCP](https://modelcontextprotocol.io) server for PostgreSQL, in Go.
 
 It gives an AI agent the tools it needs to work with a database — read the schema,
-run a `SELECT`, get a query plan, check whether the database is healthy — and
-refuses everything else. It is a Go port of
-[crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp) (MIT).
-
-> **Status: v0.1.** Seven tools, matching upstream's behaviour. The index-tuning
-> tools (`analyze_query_indexes`, `analyze_workload_indexes`) are not ported yet.
-> See [Not ported yet](#not-ported-yet).
+run a `SELECT`, get a query plan, check whether the database is healthy, and find out
+which indexes are missing — and refuses everything else. It is a Go port of
+[crystaldba/postgres-mcp](https://github.com/crystaldba/postgres-mcp) (MIT), with the
+same nine tools.
 
 ## Why
 
@@ -77,10 +74,28 @@ postgres-mcp-go -transport http      # streamable HTTP on 127.0.0.1:8080
 | `explain_query` | `EXPLAIN (FORMAT JSON)`, optionally with hypothetical indexes via `hypopg`. |
 | `get_top_queries` | Ranking from `pg_stat_statements` by resources, total time, or mean time. |
 | `analyze_db_health` | Index, connection, vacuum, sequence, replication, buffer, constraint checks. |
+| `analyze_query_indexes` | Index recommendations for a list of statements. |
+| `analyze_workload_indexes` | Index recommendations for the recorded workload. |
 
-Two optional extensions improve the output but are not required: `pg_stat_statements`
-for `get_top_queries`, `hypopg` for hypothetical indexes, `pgstattuple` for index
-bloat. Without them the affected check reports what to install and the rest work.
+Three optional extensions improve the output but are not required: `pg_stat_statements`
+for `get_top_queries` and `analyze_workload_indexes`, `hypopg` for hypothetical indexes
+and for both index tools, `pgstattuple` for index bloat. Without them the affected check
+reports what to install and the rest work.
+
+## Index tuning
+
+`analyze_query_indexes` and `analyze_workload_indexes` do not guess. For every candidate
+index they ask Postgres's own planner, through `hypopg`, what the workload would cost
+with that index in place, and report the `CREATE INDEX` statements whose measured
+effect is worth their size.
+
+The search is greedy with a Pareto objective, so a 1000x speedup is accepted for 10x
+the space and a 10% gain is not accepted for anything. Column candidates come from
+walking the statement's syntax tree, so only columns that are actually filtered, joined,
+grouped, or sorted are proposed, and a target-list alias is followed to the real column.
+
+The numbers are planner cost estimates, not measurements, and the report says so. Check
+them with `EXPLAIN` after creating the first index, and keep what the plan really uses.
 
 ## How read-only is enforced
 
@@ -108,14 +123,12 @@ The rules are transcribed from upstream's `safe_sql.py` by
 `EXPLAIN ANALYZE` is not available. It executes the statement, which is the one
 thing this server exists to avoid.
 
-## Not ported yet
+## Not ported
 
-- `analyze_query_indexes` and `analyze_workload_indexes` — upstream's
-  dynamic-tuning-advisor search. It is the largest part of upstream and the most
-  heuristic, so it is a separate piece of work rather than a rushed one.
-- The LLM-driven index optimiser. Upstream calls it experimental.
-- The SSE transport. It is deprecated in the MCP spec; use stdio or
-  streamable HTTP.
+- **The LLM-driven index optimiser** (`index/llm_opt.py`). Upstream calls it
+  experimental, it needs an OpenAI key, and the heuristic search plus `hypopg` covers
+  the same ground.
+- **The SSE transport.** Deprecated in the MCP spec; use stdio or streamable HTTP.
 
 ## Development
 
@@ -125,8 +138,12 @@ make lint    # golangci-lint
 make smoke DATABASE_URL=...   # MCP handshake against a live database
 ```
 
+CI runs the same tests plus an integration job against a real PostgreSQL 18 with
+`pg_stat_statements`, `pgstattuple`, and `hypopg`. Set `TEST_DATABASE_URL` to run the
+integration tests locally; they skip without it.
+
 `AGENTS.md` has the layout, the security invariants, and the reasoning behind the
-structure.
+structure. `PLAN.md` records the phases and what each one cost.
 
 ## Licence
 
