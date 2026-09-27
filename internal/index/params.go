@@ -265,7 +265,7 @@ func ExtractParams(stmt *pg_query.SelectStmt) ([]paramSite, int) {
 	// The scope is passed in, so a comparison inside a subquery resolves against
 	// that subquery's aliases rather than the outer ones.
 	scope.onCompare = func(scope *queryScope, left, right *pg_query.Node) {
-		collector.compare(scope, left, right)
+		collector.total += collector.compare(scope, left, right)
 	}
 	scope.walkSelect(stmt)
 	return collector.sites, collector.total - len(collector.sites)
